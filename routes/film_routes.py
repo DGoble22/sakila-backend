@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify
 from db_config import get_db_connection
 from flask import request
+from datetime import datetime
 film_bp = Blueprint('film_bp', __name__)
 
 @film_bp.route('/api/film-details/<int:id>', methods=['GET'])
@@ -17,7 +18,7 @@ def get_film_details(id):
             JOIN film_actor fa ON f.film_id = fa.film_id
             JOIN actor a ON fa.actor_id = a.actor_id
             WHERE f.film_id = %s
-            GROUP BY f.film_id;
+            GROUP BY f.film_id, f.title, f.description, f.release_year, c.name;
         """
 
     cursor.execute(query, (id,))
@@ -92,3 +93,52 @@ def get_films():
     db.close()
 
     return jsonify(results)
+
+
+@film_bp.route('/api/rent-film', methods=['POST'])
+def rent_film():
+    data = request.get_json()
+    film_id = data.get('film_id')
+    customer_id = data.get('customer_id')
+    staff_id = 1  # Placeholder for now
+
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        #checks inventory id for the film that is not currently rented out
+        check_inventory_sql = """
+                              SELECT i.inventory_id
+                              FROM inventory i
+                              WHERE i.film_id = %s
+                                AND i.inventory_id NOT IN (SELECT r.inventory_id
+                                                           FROM rental r
+                                                           WHERE r.return_date IS NULL)
+                              LIMIT 1;
+                              """
+        cursor.execute(check_inventory_sql, (film_id,))
+        available_item = cursor.fetchone()
+
+        if not available_item:
+            return jsonify({"error": "Sorry, this film is out of stock!"}), 409
+
+        inventory_id = available_item['inventory_id']
+
+        # Inserts rental record with current timestamp and NULL return date
+        insert_rental_sql = """
+                            INSERT INTO rental (rental_date, inventory_id, customer_id, return_date, staff_id)
+                            VALUES (%s, %s, %s, NULL, %s)
+                            """
+        rental_date = datetime.now()
+
+        cursor.execute(insert_rental_sql, (rental_date, inventory_id, customer_id, staff_id))
+        db.commit()
+
+        return jsonify({"message": f"Success! You have rented this film!"}), 200
+
+    except Exception as e:
+        db.rollback()  # reverses changes in case of error
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        db.close()
